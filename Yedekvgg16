@@ -1,0 +1,123 @@
+#As the epoch increases accuraccy is going low, might be because of high learning rate
+
+#Drive mount
+from google.colab import drive
+drive.mount('/content/drive')
+
+
+###
+import os
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.applications import VGG16
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import UpSampling2D, Conv2D, concatenate
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+
+def load_images(path, size=(224, 224)):
+    images = []
+    for img in os.listdir(path):
+        img_path = os.path.join(path, img)
+        img = load_img(img_path, target_size=size)
+        img = img_to_array(img)
+        images.append(img)
+    return np.array(images)
+
+# Paths to images and masks
+images_path = '/content/drive/MyDrive/ayrik1/original_images'
+masks_path = '/content/drive/MyDrive/ayrik1/label_images_semantic'
+
+# Load images and masks
+images = load_images(images_path)
+masks = load_images(masks_path)
+
+# Normalize images
+images = images / 255.0
+
+# Convert masks to integer and remove any extra channels
+masks = masks.astype(int)
+if masks.shape[-1] == 3:  # Assuming masks have 3 channels
+    masks = masks[:, :, :, 0]  # Use only the first channel
+
+# Check if masks are correct
+print(f"Unique values in masks before one-hot encoding: {np.unique(masks)}")
+
+# One-hot encode the masks
+num_classes = np.max(masks) + 1
+masks = tf.keras.utils.to_categorical(masks, num_classes=num_classes)
+
+# Ensure masks have the shape (num_samples, 224, 224, num_classes)
+print(f"Shape of masks after one-hot encoding: {masks.shape}")
+
+# Split data into training and validation sets
+X_train, X_val, y_train, y_val = train_test_split(images, masks, test_size=0.2, random_state=42)
+
+def build_vgg16_unet(input_shape, num_classes):
+    vgg16 = VGG16(weights='imagenet', include_top=False, input_shape=input_shape)
+
+    # Encoder
+    for layer in vgg16.layers:
+        layer.trainable = False
+
+    # Decoder
+    x = vgg16.output
+    x = UpSampling2D((2, 2))(x)
+    x = Conv2D(512, (3, 3), activation='relu', padding='same')(x)
+    x = concatenate([x, vgg16.get_layer('block5_conv3').output])
+
+    x = UpSampling2D((2, 2))(x)
+    x = Conv2D(256, (3, 3), activation='relu', padding='same')(x)
+    x = concatenate([x, vgg16.get_layer('block4_conv3').output])
+
+    x = UpSampling2D((2, 2))(x)
+    x = Conv2D(128, (3, 3), activation='relu', padding='same')(x)
+    x = concatenate([x, vgg16.get_layer('block3_conv3').output])
+
+    x = UpSampling2D((2, 2))(x)
+    x = Conv2D(64, (3, 3), activation='relu', padding='same')(x)
+    x = concatenate([x, vgg16.get_layer('block2_conv2').output])
+
+    x = UpSampling2D((2, 2))(x)
+    x = Conv2D(32, (3, 3), activation='relu', padding='same')(x)
+    x = concatenate([x, vgg16.get_layer('block1_conv2').output])
+
+    x = Conv2D(num_classes, (1, 1), activation='softmax')(x)
+
+    return Model(inputs=vgg16.input, outputs=x)
+
+
+########################################################################
+input_shape = (224, 224, 3)
+model = build_vgg16_unet(input_shape, num_classes)
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=11, batch_size=16)
+
+# Function to display results
+def display_results(image, mask, prediction):
+    plt.figure(figsize=(12, 4))
+    
+    plt.subplot(1, 3, 1)
+    plt.title('Original Image')
+    plt.imshow(image)
+    plt.axis('off')
+    
+    plt.subplot(1, 3, 2)
+    plt.title('Ground Truth')
+    plt.imshow(np.argmax(mask, axis=-1))
+    plt.axis('off')
+    
+    plt.subplot(1, 3, 3)
+    plt.title('Prediction')
+    plt.imshow(np.argmax(prediction, axis=-1))
+    plt.axis('off')
+    
+    plt.show()
+
+# Predict on a validation image
+sample_image = X_val[0]
+sample_mask = y_val[0]
+sample_pred = model.predict(np.expand_dims(sample_image, axis=0))
+
+display_results(sample_image, sample_mask, sample_pred[0])
